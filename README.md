@@ -1,4 +1,4 @@
-# OPAL
+# OPAL (WIP)
 
 Command line tools and library for controlling Opal disk drives using Linux IOCTLs.
 
