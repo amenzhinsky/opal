@@ -11,11 +11,9 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/amenzhinsky/opal"
 	"golang.org/x/crypto/pbkdf2"
 )
-
-// #include "opal.h"
-import "C"
 
 var verboseFlag bool
 
@@ -89,6 +87,8 @@ func cmdHash(fs *flag.FlagSet, argv []string) error {
 	if sha512Flag {
 		hash = sha512.New
 	}
+
+	// TODO: configurable iter and keyLen
 	b := pbkdf2.Key(passwd, serial, 75000, 32, hash)
 	fmt.Println(hex.EncodeToString(b))
 	return nil
@@ -123,7 +123,7 @@ func cmdSave(fs *flag.FlagSet, argv []string) error {
 		}
 	}
 
-	return opalLockUnlock(fs.Arg(0), passwd)
+	return opal.LockUnlock(fs.Arg(0), passwd)
 }
 
 func cmdMbr(fs *flag.FlagSet, argv []string) error {
@@ -136,12 +136,12 @@ func cmdMbr(fs *flag.FlagSet, argv []string) error {
 		return flag.ErrHelp
 	}
 
-	var action C.enum_opal_mbr
+	var enable bool
 	switch fs.Arg(1) {
 	case "on":
-		action = C.OPAL_MBR_ENABLE
+		enable = true
 	case "off":
-		action = C.OPAL_MBR_DISABLE
+		enable = false
 	default:
 		fs.Usage()
 		return flag.ErrHelp
@@ -151,71 +151,16 @@ func cmdMbr(fs *flag.FlagSet, argv []string) error {
 	if err != nil {
 		return err
 	}
-	key, err := newKey(passwd)
+	mbr, err := opal.NewMBRData(enable, passwd)
 	if err != nil {
 		return err
 	}
-
-	fmt.Printf("--> %#v\n", &C.struct_opal_mbr_data{
-		key:            *key,
-		enable_disable: C.__u8(action),
-	})
+	fmt.Printf("--> %#v\n", mbr)
 	return nil
 }
 
 func cmdMbrDone(fs *flag.FlagSet, argv []string) error {
 	return nil
-}
-
-func opalLockUnlock(dev string, passwd []byte) error {
-	f, err := os.OpenFile("/dev/"+dev, os.O_RDONLY, 0)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	lkul, err := newLockUnlock(passwd)
-	if err != nil {
-		return err
-	}
-	return opalErr(C.opal_lock_unlock(C.int(f.Fd()), lkul))
-}
-
-func newLockUnlock(passwd []byte) (*C.struct_opal_lock_unlock, error) {
-	si, err := newSessionInfo(passwd)
-	if err != nil {
-		return nil, err
-	}
-	return &C.struct_opal_lock_unlock{
-		l_state: C.OPAL_RW, // TODO: configure
-		session: *si,
-	}, nil
-}
-
-func newSessionInfo(passwd []byte) (*C.struct_opal_session_info, error) {
-	key, err := newKey(passwd)
-	if err != nil {
-		return nil, err
-	}
-	return &C.struct_opal_session_info{
-		sum:      0,
-		who:      C.OPAL_ADMIN1,
-		opal_key: *key,
-	}, nil
-}
-
-func newKey(key []byte) (*C.struct_opal_key, error) {
-	k := &C.struct_opal_key{
-		lr:      0,
-		key_len: C.__u8(len(key)),
-	}
-	if len(k.key) < len(key) {
-		return nil, errors.New("key is too long")
-	}
-	for i := range key {
-		k.key[i] = C.__u8(key[i])
-	}
-	return k, nil
 }
 
 func mkUsage(fs *flag.FlagSet, usage, description string) func() {
@@ -233,21 +178,6 @@ func mkUsage(fs *flag.FlagSet, usage, description string) func() {
 		fmt.Fprint(os.Stderr, "\nCommon options:\n")
 		flag.PrintDefaults()
 	}
-}
-
-func opalErr(ret C.int) error {
-	if ret == 0 {
-		return nil
-	}
-	return opalError{ret: ret}
-}
-
-type opalError struct {
-	ret C.int
-}
-
-func (e opalError) Error() string {
-	return C.GoString(C.opal_error_to_human(e.ret))
 }
 
 func getSerial(device string) ([]byte, error) {
