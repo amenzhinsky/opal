@@ -8,22 +8,24 @@ import (
 // #include "opal.h"
 import "C"
 
-func LockUnlock(dev string, passwd []byte) error {
-	f, err := os.OpenFile("/dev/"+dev, os.O_RDONLY, 0)
+func Save(f *os.File, passwd []byte) error {
+	lkul, err := newLockUnlock(passwd)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-
-	lkul, err := NewLockUnlock(passwd)
-	if err != nil {
-		return err
-	}
-	return opalErr(C.opal_lock_unlock(C.int(f.Fd()), lkul))
+	return checkErr(C.opal_save(C.int(f.Fd()), lkul))
 }
 
-func NewLockUnlock(passwd []byte) (*C.struct_opal_lock_unlock, error) {
-	si, err := NewSessionInfo(passwd)
+func LockUnlock(f *os.File, passwd []byte) error {
+	lkul, err := newLockUnlock(passwd)
+	if err != nil {
+		return err
+	}
+	return checkErr(C.opal_lock_unlock(C.int(f.Fd()), lkul))
+}
+
+func newLockUnlock(passwd []byte) (*C.struct_opal_lock_unlock, error) {
+	si, err := newSessionInfo(passwd)
 	if err != nil {
 		return nil, err
 	}
@@ -33,8 +35,145 @@ func NewLockUnlock(passwd []byte) (*C.struct_opal_lock_unlock, error) {
 	}, nil
 }
 
-func NewSessionInfo(passwd []byte) (*C.struct_opal_session_info, error) {
-	key, err := NewKey(passwd)
+func TakeOwnership(f *os.File, passwd []byte) error {
+	key, err := newKey(passwd)
+	if err != nil {
+		return err
+	}
+	return checkErr(C.opal_take_ownership(C.int(f.Fd()), key))
+}
+
+func ActivateLsp(f *os.File, passwd []byte) error {
+	key, err := newKey(passwd)
+	if err != nil {
+		return err
+	}
+	return checkErr(C.opal_activate_lsp(C.int(f.Fd()), &C.struct_opal_lr_act{
+		key: *key,
+		sum: 0,
+		// TODO: num_lrs: 0,
+		// TODO: lr:
+	}))
+}
+
+func SetPw(f *os.File, passwd []byte) error {
+	si, err := newSessionInfo(passwd)
+	if err != nil {
+		return err
+	}
+	return checkErr(C.opal_set_pw(C.int(f.Fd()), &C.struct_opal_new_pw{
+		session: *si,
+		// new_user_pw: C._struct_opal_session_info{},
+	}))
+}
+
+func ActivateUsr(f *os.File, passwd []byte) error {
+	si, err := newSessionInfo(passwd)
+	if err != nil {
+		return err
+	}
+	return checkErr(C.opal_activate_usr(C.int(f.Fd()), si))
+}
+
+func RevertTpr(f *os.File, passwd []byte) error {
+	key, err := newKey(passwd)
+	if err != nil {
+		return err
+	}
+	return checkErr(C.opal_revert_tpr(C.int(f.Fd()), key))
+}
+
+func LrSetup(f *os.File, passwd []byte) error {
+	si, err := newSessionInfo(passwd)
+	if err != nil {
+		return err
+	}
+	return checkErr(C.opal_lr_setup(C.int(f.Fd()), &C.struct_opal_user_lr_setup{
+		range_start:  0,
+		range_length: 0,
+		RLE:          0,
+		WLE:          0,
+		session:      *si,
+	}))
+}
+
+func AddUserToLr(f *os.File, passwd []byte) error {
+	lkul, err := newLockUnlock(passwd)
+	if err != nil {
+		return err
+	}
+	return checkErr(C.opal_add_usr_to_lr(C.int(f.Fd()), lkul))
+}
+
+func EnableDisableMbr(f *os.File, passwd []byte, enable bool) error {
+	key, err := newKey(passwd)
+	if err != nil {
+		return err
+	}
+	enableDisable := C.OPAL_MBR_DISABLE
+	if enable {
+		enableDisable = C.OPAL_MBR_DISABLE
+	}
+	return checkErr(C.opal_enable_disable_mbr(C.int(f.Fd()), &C.struct_opal_mbr_data{
+		key:            *key,
+		enable_disable: C.__u8(enableDisable),
+	}))
+}
+
+func EraseLr(f *os.File, passwd []byte) error {
+	si, err := newSessionInfo(passwd)
+	if err != nil {
+		return err
+	}
+	return checkErr(C.opal_erase_lr(C.int(f.Fd()), si))
+}
+
+func SecureEraseLr(f *os.File, passwd []byte) error {
+	si, err := newSessionInfo(passwd)
+	if err != nil {
+		return err
+	}
+	return checkErr(C.opal_secure_erase_lr(C.int(f.Fd()), si))
+}
+
+func PsidRevertTpr(f *os.File, passwd []byte) error {
+	key, err := newKey(passwd)
+	if err != nil {
+		return err
+	}
+	return checkErr(C.opal_psid_revert_tpr(C.int(f.Fd()), key))
+}
+
+func MbrDone(f *os.File, passwd []byte, done bool) error {
+	key, err := newKey(passwd)
+	if err != nil {
+		return err
+	}
+	doneFlag := C.OPAL_MBR_NOT_DONE
+	if done {
+		doneFlag = C.OPAL_MBR_DONE
+	}
+	return checkErr(C.opal_mbr_done(C.int(f.Fd()), &C.struct_opal_mbr_done{
+		key:       *key,
+		done_flag: C.__u8(doneFlag),
+	}))
+}
+
+func MbrWriteShadow(f *os.File, passwd, data []byte) error {
+	key, err := newKey(passwd)
+	if err != nil {
+		return err
+	}
+	return checkErr(C.mbr_write_data(C.int(f.Fd()), &C.struct_opal_shadow_mbr{
+		key: *key,
+		//data: 0,
+		//offset: 0,
+		//size: 0,
+	}))
+}
+
+func newSessionInfo(passwd []byte) (*C.struct_opal_session_info, error) {
+	key, err := newKey(passwd)
 	if err != nil {
 		return nil, err
 	}
@@ -45,7 +184,7 @@ func NewSessionInfo(passwd []byte) (*C.struct_opal_session_info, error) {
 	}, nil
 }
 
-func NewKey(passwd []byte) (*C.struct_opal_key, error) {
+func newKey(passwd []byte) (*C.struct_opal_key, error) {
 	key := &C.struct_opal_key{
 		lr:      0,
 		key_len: C.__u8(len(passwd)),
@@ -59,32 +198,17 @@ func NewKey(passwd []byte) (*C.struct_opal_key, error) {
 	return key, nil
 }
 
-func NewMBRData(enable bool, passwd []byte) (*C.struct_opal_mbr_data, error) {
-	key, err := NewKey(passwd)
-	if err != nil {
-		return nil, err
-	}
-	enableDisable := C.OPAL_MBR_DISABLE
-	if enable {
-		enableDisable = C.OPAL_MBR_DISABLE
-	}
-	return &C.struct_opal_mbr_data{
-		key:            *key,
-		enable_disable: C.__u8(enableDisable),
-	}, nil
-}
-
-func opalErr(ret C.int) error {
+func checkErr(ret C.int) error {
 	if ret == 0 {
 		return nil
 	}
-	return opalError{ret: ret}
+	return Error{ret: ret}
 }
 
-type opalError struct {
+type Error struct {
 	ret C.int
 }
 
-func (e opalError) Error() string {
+func (e Error) Error() string {
 	return C.GoString(C.opal_error_to_human(e.ret))
 }

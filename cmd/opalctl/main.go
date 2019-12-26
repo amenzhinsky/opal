@@ -17,7 +17,11 @@ import (
 
 var verboseFlag bool
 
-// https://gitlab.com/zub2/opalctl/blob/master/src/opalpba.c
+var (
+	errUsage      = errors.New("invalid usage")
+	errUnknownCmd = errors.New("unknown command")
+)
+
 func main() {
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, `Usage: %s [common-option...] COMMAND [arg...]
@@ -38,17 +42,23 @@ Common options:
 		flag.Usage()
 		os.Exit(2)
 	}
-	if err := run(); err != nil {
-		if err == flag.ErrHelp {
+
+	fs := flag.NewFlagSet(flag.Arg(0), flag.ExitOnError)
+	if err := run(fs, flag.Args()[1:]); err != nil {
+		if err == errUnknownCmd {
+			flag.Usage()
+			os.Exit(2)
+		}
+		if err == errUsage {
+			fs.Usage()
 			os.Exit(2)
 		}
 		fmt.Fprintf(os.Stderr, "error: %s\n", err)
-		os.Exit(1)
+		os.Exit(255)
 	}
 }
 
-func run() error {
-	fs, argv := flag.NewFlagSet(flag.Arg(0), flag.ContinueOnError), flag.Args()[1:]
+func run(fs *flag.FlagSet, argv []string) error {
 	switch fs.Name() {
 	case "hash":
 		return cmdHash(fs, argv)
@@ -57,22 +67,25 @@ func run() error {
 	case "mbr":
 		return cmdMbr(fs, argv)
 	default:
-		flag.Usage()
-		return flag.ErrHelp
+		return errUnknownCmd
 	}
 }
 
 func cmdHash(fs *flag.FlagSet, argv []string) error {
-	var sha512Flag bool
-	fs.Usage = mkUsage(fs, "DEVICE",
-		"sedutil-cli compatible password hashing using PBKDF2-HMAC-SHA1.")
+	var (
+		sha512Flag bool
+		iterFlag   int
+		lenFlag    int
+	)
+	fs.Usage = mkUsage(fs, "DEVICE")
 	fs.BoolVar(&sha512Flag, "sha512", false, "use PBKDF2-HMAC-SHA512")
+	fs.IntVar(&iterFlag, "iter", 75000, "`number` of iterations")
+	fs.IntVar(&lenFlag, "len", 32, "key length in `bytes`")
 	if err := fs.Parse(argv); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 {
-		fs.Usage()
-		return flag.ErrHelp
+		return errUsage
 	}
 
 	serial, err := getSerial(fs.Arg(0))
@@ -88,8 +101,7 @@ func cmdHash(fs *flag.FlagSet, argv []string) error {
 		hash = sha512.New
 	}
 
-	// TODO: configurable iter and keyLen
-	b := pbkdf2.Key(passwd, serial, 75000, 32, hash)
+	b := pbkdf2.Key(passwd, serial, iterFlag, lenFlag, hash)
 	fmt.Println(hex.EncodeToString(b))
 	return nil
 }
@@ -100,7 +112,7 @@ func cmdSave(fs *flag.FlagSet, argv []string) error {
 		//stdinFlag bool
 		fileFlag string
 	)
-	fs.Usage = mkUsage(fs, "DEVICE", "")
+	fs.Usage = mkUsage(fs, "DEVICE")
 	fs.BoolVar(&hexFlag, "hex", false, "password is hex encoded")
 	//fs.BoolVar(&stdinFlag, "stdin", false, "read password from stdin")
 	fs.StringVar(&fileFlag, "file", "", "read password from the `filepath`")
@@ -108,8 +120,7 @@ func cmdSave(fs *flag.FlagSet, argv []string) error {
 		return err
 	}
 	if fs.NArg() != 1 {
-		fs.Usage()
-		return flag.ErrHelp
+		return errUsage
 	}
 
 	passwd, err := getPassword()
@@ -123,17 +134,22 @@ func cmdSave(fs *flag.FlagSet, argv []string) error {
 		}
 	}
 
-	return opal.LockUnlock(fs.Arg(0), passwd)
+	f, err := os.OpenFile("/dev/"+fs.Arg(0), os.O_RDONLY, 0)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	return opal.LockUnlock(f, passwd)
 }
 
 func cmdMbr(fs *flag.FlagSet, argv []string) error {
-	fs.Usage = mkUsage(fs, "DEVICE on|off", "")
+	fs.Usage = mkUsage(fs, "DEVICE on|off")
 	if err := fs.Parse(argv); err != nil {
 		return err
 	}
 	if fs.NArg() != 2 {
-		fs.Usage()
-		return flag.ErrHelp
+		return errUsage
 	}
 
 	var enable bool
@@ -143,19 +159,16 @@ func cmdMbr(fs *flag.FlagSet, argv []string) error {
 	case "off":
 		enable = false
 	default:
-		fs.Usage()
-		return flag.ErrHelp
+		return errUsage
 	}
 
 	passwd, err := getPassword()
 	if err != nil {
 		return err
 	}
-	mbr, err := opal.NewMBRData(enable, passwd)
-	if err != nil {
-		return err
-	}
-	fmt.Printf("--> %#v\n", mbr)
+
+	_ = enable
+	_ = passwd // TODO
 	return nil
 }
 
@@ -163,15 +176,17 @@ func cmdMbrDone(fs *flag.FlagSet, argv []string) error {
 	return nil
 }
 
-func mkUsage(fs *flag.FlagSet, usage, description string) func() {
+func mkUsage(fs *flag.FlagSet, usage string) func() {
 	return func() {
+		var hasFlags bool
+		fs.VisitAll(func(f *flag.Flag) {
+			hasFlags = true
+		})
+
 		fmt.Fprintf(os.Stderr, `Usage: %s [common-option...] %s [option...] %s`,
 			filepath.Base(os.Args[0]), fs.Name(), usage)
 		fmt.Fprint(os.Stderr, "\n")
-		if description != "" {
-			fmt.Fprint(os.Stderr, "\n", description, "\n")
-		}
-		if fs.NFlag() > 0 {
+		if hasFlags {
 			fmt.Fprint(os.Stderr, "\nOptions:\n")
 			fs.PrintDefaults()
 		}
