@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"crypto/sha1"
 	"crypto/sha512"
 	"encoding/hex"
@@ -11,7 +12,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/amenzhinsky/opal"
+	_ "github.com/amenzhinsky/opal"
+	"github.com/amenzhinsky/opal/termios"
 	"golang.org/x/crypto/pbkdf2"
 )
 
@@ -134,13 +136,8 @@ func cmdSave(fs *flag.FlagSet, argv []string) error {
 		}
 	}
 
-	f, err := os.OpenFile("/dev/"+fs.Arg(0), os.O_RDONLY, 0)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	return opal.LockUnlock(f, passwd)
+	return nil
+	//return opal.LockUnlock(f, passwd)
 }
 
 func cmdMbr(fs *flag.FlagSet, argv []string) error {
@@ -214,6 +211,19 @@ func getSerial(device string) ([]byte, error) {
 }
 
 func getPassword() ([]byte, error) {
-	// TODO: isatty
-	return ioutil.ReadAll(os.Stdin)
+	term, err := termios.Get()
+	if err != nil {
+		// not a tty, read until EOF
+		return ioutil.ReadAll(os.Stdin)
+	}
+	term.Lflag ^= termios.ECHO
+	if err = termios.Set(term); err != nil {
+		return nil, err
+	}
+	fmt.Fprintf(os.Stderr, "Enter password: ")
+	line, _, err := bufio.NewReader(os.Stdin).ReadLine()
+	if err != nil {
+		return nil, err
+	}
+	return line, nil
 }
