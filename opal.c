@@ -1,7 +1,8 @@
 #include <linux/sed-opal.h>
 #include <sys/ioctl.h>
 
-// https://github.com/torvalds/linux/blob/v5.4/block/sed-opal.c#L248
+// TCG_Storage_Architecture_Core_Spec_v2.01_r1.00,
+// 5.1.5 Method Status Codes
 static const char *const opal_errors[] = {
     "Success",
     "Not Authorized",

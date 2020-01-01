@@ -1,9 +1,6 @@
 package main
 
 import (
-	"bufio"
-	"crypto/sha1"
-	"crypto/sha512"
 	"encoding/hex"
 	"errors"
 	"flag"
@@ -12,9 +9,9 @@ import (
 	"os"
 	"path/filepath"
 
-	_ "github.com/amenzhinsky/opal"
-	"github.com/amenzhinsky/opal/termios"
-	"golang.org/x/crypto/pbkdf2"
+	"github.com/amenzhinsky/opal"
+	"github.com/amenzhinsky/opal/hash"
+	"github.com/amenzhinsky/opal/terminal"
 )
 
 var verboseFlag bool
@@ -56,7 +53,7 @@ Common options:
 			os.Exit(2)
 		}
 		fmt.Fprintf(os.Stderr, "error: %s\n", err)
-		os.Exit(255)
+		os.Exit(-1)
 	}
 }
 
@@ -66,6 +63,8 @@ func run(fs *flag.FlagSet, argv []string) error {
 		return cmdHash(fs, argv)
 	case "save":
 		return cmdSave(fs, argv)
+	case "lkul":
+		return cmdLockUnlock(fs, argv)
 	case "mbr":
 		return cmdMbr(fs, argv)
 	default:
@@ -81,8 +80,8 @@ func cmdHash(fs *flag.FlagSet, argv []string) error {
 	)
 	fs.Usage = mkUsage(fs, "DEVICE")
 	fs.BoolVar(&sha512Flag, "sha512", false, "use PBKDF2-HMAC-SHA512")
-	fs.IntVar(&iterFlag, "iter", 75000, "`number` of iterations")
-	fs.IntVar(&lenFlag, "len", 32, "key length in `bytes`")
+	fs.IntVar(&iterFlag, "iter", 0, "`number` of iterations")
+	fs.IntVar(&lenFlag, "len", 0, "key length in `bytes`")
 	if err := fs.Parse(argv); err != nil {
 		return err
 	}
@@ -90,34 +89,24 @@ func cmdHash(fs *flag.FlagSet, argv []string) error {
 		return errUsage
 	}
 
-	serial, err := getSerial(fs.Arg(0))
+	passwd, err := getPassword(opal.Admin1, fs.Arg(0), false, false)
 	if err != nil {
 		return err
 	}
-	passwd, err := getPassword()
+	b, err := hash.Hash(passwd, fs.Arg(0),
+		hash.WithIterations(iterFlag),
+		hash.WithKeyLength(lenFlag),
+		hash.WithSHA512(sha512Flag),
+	)
 	if err != nil {
 		return err
 	}
-	hash := sha1.New
-	if sha512Flag {
-		hash = sha512.New
-	}
-
-	b := pbkdf2.Key(passwd, serial, iterFlag, lenFlag, hash)
 	fmt.Println(hex.EncodeToString(b))
 	return nil
 }
 
 func cmdSave(fs *flag.FlagSet, argv []string) error {
-	var (
-		hexFlag bool
-		//stdinFlag bool
-		fileFlag string
-	)
 	fs.Usage = mkUsage(fs, "DEVICE")
-	fs.BoolVar(&hexFlag, "hex", false, "password is hex encoded")
-	//fs.BoolVar(&stdinFlag, "stdin", false, "read password from stdin")
-	fs.StringVar(&fileFlag, "file", "", "read password from the `filepath`")
 	if err := fs.Parse(argv); err != nil {
 		return err
 	}
@@ -125,19 +114,58 @@ func cmdSave(fs *flag.FlagSet, argv []string) error {
 		return errUsage
 	}
 
-	passwd, err := getPassword()
+	passwd, err := getPassword(opal.Admin1, fs.Arg(0), false, false)
 	if err != nil {
 		return err
 	}
-	if hexFlag {
-		passwd, err = hex.DecodeString(string(passwd))
-		if err != nil {
-			return err
-		}
-	}
+	_ = passwd
 
 	return nil
-	//return opal.LockUnlock(f, passwd)
+}
+
+func cmdLockUnlock(fs *flag.FlagSet, argv []string) error {
+	var (
+		userFlag = opal.Admin1
+		lrFlag   uint
+	)
+	fs.Usage = mkUsage(fs, "DEVICE <RW|RO|LK>")
+	fs.UintVar(&lrFlag, "lr", 0, "locking range number")
+	fs.Var((*userVar)(&userFlag), "user", "set `username` (default Admin1)")
+	if err := fs.Parse(argv); err != nil {
+		return err
+	}
+	if fs.NArg() != 2 {
+		return errUsage
+	}
+
+	var state opal.LockUnlockState
+	switch fs.Arg(1) {
+	case "RW":
+		state = opal.LockUnlockReadWrite
+	case "RO":
+		state = opal.LockUnlockReadOnly
+	case "LK":
+		state = opal.LockUnlockLock
+	default:
+		return fmt.Errorf("unknown locking range state %q", fs.Arg(1))
+	}
+
+	passwd, err := getPassword(userFlag, fs.Arg(0), false, false)
+	if err != nil {
+		return err
+	}
+
+	key, err := opal.NewKey(passwd, lrFlag)
+	if err != nil {
+		return err
+	}
+
+	c, err := opal.Open(fs.Arg(0))
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	return c.LockUnlock(opal.NewSession(key, userFlag), state)
 }
 
 func cmdMbr(fs *flag.FlagSet, argv []string) error {
@@ -159,17 +187,13 @@ func cmdMbr(fs *flag.FlagSet, argv []string) error {
 		return errUsage
 	}
 
-	passwd, err := getPassword()
+	passwd, err := getPassword(opal.Admin1, fs.Arg(0), false, false)
 	if err != nil {
 		return err
 	}
 
 	_ = enable
 	_ = passwd // TODO
-	return nil
-}
-
-func cmdMbrDone(fs *flag.FlagSet, argv []string) error {
 	return nil
 }
 
@@ -192,38 +216,61 @@ func mkUsage(fs *flag.FlagSet, usage string) func() {
 	}
 }
 
-func getSerial(device string) ([]byte, error) {
-	p := fmt.Sprintf("/sys/class/block/%s/device/serial", device)
-	f, err := os.OpenFile(p, os.O_RDONLY, 0)
+func getPassword(user opal.User, device string, isRaw, isHex bool) ([]byte, error) {
+	var b []byte
+	var err error
+	if terminal.Isatty() {
+		s := fmt.Sprintf("[opal] enter %s password for %s: ", user, device)
+		b, err = terminal.Prompt(s)
+	} else {
+		b, err = ioutil.ReadAll(os.Stdin)
+	}
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
-	b := make([]byte, 20)
-	n, err := f.Read(b)
-	if err != nil {
-		return nil, err
+	if len(b) == 0 {
+		return nil, errors.New("passwd is empty")
 	}
-	if n != len(b) {
-		return nil, errors.New("invalid serial length")
+
+	if isRaw {
+		if isHex {
+			return hex.DecodeString(string(b))
+		}
+		return b, nil
 	}
-	return b, nil
+	return hash.Hash(b, device)
 }
 
-func getPassword() ([]byte, error) {
-	term, err := termios.Get()
-	if err != nil {
-		// not a tty, read until EOF
-		return ioutil.ReadAll(os.Stdin)
+type userVar opal.User
+
+func (f *userVar) Set(s string) error {
+	switch s {
+	case "Admin1":
+		*f = userVar(opal.Admin1)
+	case "User1":
+		*f = userVar(opal.User1)
+	case "User2":
+		*f = userVar(opal.User2)
+	case "User3":
+		*f = userVar(opal.User3)
+	case "User4":
+		*f = userVar(opal.User4)
+	case "User5":
+		*f = userVar(opal.User5)
+	case "User6":
+		*f = userVar(opal.User6)
+	case "User7":
+		*f = userVar(opal.User7)
+	case "User8":
+		*f = userVar(opal.User8)
+	case "User9":
+		*f = userVar(opal.User9)
+	default:
+		return fmt.Errorf("unknown user %q", s)
 	}
-	term.Lflag ^= termios.ECHO
-	if err = termios.Set(term); err != nil {
-		return nil, err
-	}
-	fmt.Fprintf(os.Stderr, "Enter password: ")
-	line, _, err := bufio.NewReader(os.Stdin).ReadLine()
-	if err != nil {
-		return nil, err
-	}
-	return line, nil
+	return nil
+}
+
+func (f *userVar) String() string {
+	return opal.User(*f).String()
 }
