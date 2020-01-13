@@ -23,13 +23,10 @@ opalctl hash nvme0n1 PASSWORD
 opalctl save -hex nvme0n1 HASH
 ``` 
 
-To get your device NAME run `lsblk` and find the corresponding record with `disk` type:
+To get your device NAME run `lsblk -d -o NAME,SIZE`:
 
 ```
-NAME        MAJ:MIN RM   SIZE RO TYPE MOUNTPOINT
-nvme0n1     259:0    0   477G  0 disk
-├─nvme0n1p1 259:1    0   512M  0 part /boot
-└─nvme0n1p2 259:2    0 476.4G  0 part /
+NAME      SIZE
+sda      1024G
+nvme0n1   512G
 ```
-
-It's `nvme0n1` in this example.

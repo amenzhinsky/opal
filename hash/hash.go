@@ -43,9 +43,16 @@ func WithSHA512(enabled bool) Option {
 	}
 }
 
+func WithSalt(salt []byte) Option {
+	return func(s *settings) {
+		s.salt = salt
+	}
+}
+
 type settings struct {
 	iter   int
 	keyLen int
+	salt   []byte
 	h      func() hash.Hash
 }
 
@@ -64,10 +71,6 @@ func Hash(passwd []byte, device string, opts ...Option) ([]byte, error) {
 	}
 	defer f.Close()
 
-	serial, err := getSerial(f)
-	if err != nil {
-		return nil, err
-	}
 	s := &settings{
 		iter:   75000,
 		keyLen: 32,
@@ -76,18 +79,21 @@ func Hash(passwd []byte, device string, opts ...Option) ([]byte, error) {
 	for _, opt := range opts {
 		opt(s)
 	}
-	return pbkdf2.Key(passwd, serial, s.iter, s.keyLen, s.h), nil
+	if s.salt == nil {
+		s.salt, err = getSerial(f)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return pbkdf2.Key(passwd, s.salt, s.iter, s.keyLen, s.h), nil
 }
 
 func getSerial(f *os.File) ([]byte, error) {
 	var serial [20]C.uchar
-	if ret := C.nvme_get_serial(C.int(f.Fd()), &serial[0]); ret == 0 {
-		goto Success
-	}
-	if ret := C.scsi_get_serial(C.int(f.Fd()), &serial[0]); ret != 0 {
+	if ret := C.get_serial(C.int(f.Fd()), &serial[0]); ret != 0 {
 		return nil, syscall.Errno(ret)
 	}
-Success:
 	b := make([]byte, len(serial))
 	for i := range serial {
 		b[i] = byte(serial[i])

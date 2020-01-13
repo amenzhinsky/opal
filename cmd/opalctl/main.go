@@ -26,6 +26,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, `Usage: %s [common-option...] COMMAND [arg...]
 
 Commands:
+  scan
   hash
   save
   lock-unlock
@@ -71,6 +72,8 @@ Common options:
 
 func run(fs *flag.FlagSet, argv []string) error {
 	switch fs.Name() {
+	case "scan":
+		return cmdScan(fs, argv)
 	case "hash":
 		return cmdHash(fs, argv)
 	case "save":
@@ -84,16 +87,43 @@ func run(fs *flag.FlagSet, argv []string) error {
 	}
 }
 
+func cmdScan(fs *flag.FlagSet, argv []string) error {
+	fs.Usage = mkUsage(fs, "")
+	if err := fs.Parse(argv); err != nil {
+		return err
+	}
+
+	root := "/sys/class/block"
+	return filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if path == root {
+			return nil
+		}
+		if _, err = os.Stat(filepath.Join(path, "device")); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return nil
+			}
+			return err
+		}
+		fmt.Println(info.Name())
+		return nil
+	})
+}
+
 func cmdHash(fs *flag.FlagSet, argv []string) error {
 	var (
 		sha512Flag bool
 		iterFlag   int
 		lenFlag    int
+		saltFlag   string
 	)
 	fs.Usage = mkUsage(fs, "DEVICE")
 	fs.BoolVar(&sha512Flag, "sha512", false, "use PBKDF2-HMAC-SHA512")
 	fs.IntVar(&iterFlag, "iter", 0, "`number` of iterations")
 	fs.IntVar(&lenFlag, "len", 0, "key length in `bytes`")
+	fs.StringVar(&saltFlag, "salt", "", "hashing `salt`")
 	if err := fs.Parse(argv); err != nil {
 		return err
 	}
@@ -109,6 +139,7 @@ func cmdHash(fs *flag.FlagSet, argv []string) error {
 		hash.WithIterations(iterFlag),
 		hash.WithKeyLength(lenFlag),
 		hash.WithSHA512(sha512Flag),
+		hash.WithSalt([]byte(saltFlag)),
 	)
 	if err != nil {
 		return err

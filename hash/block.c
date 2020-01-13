@@ -2,7 +2,7 @@
 #include <scsi/sg.h>
 #include <sys/ioctl.h>
 
-int scsi_get_serial(int fd, unsigned char serial[20]) {
+static int scsi_get_serial(int fd, unsigned char serial[20]) {
   // hdparm --verbose -I /dev/sda 2>&1 | grep cdb | head -1
   unsigned char cdb[16] = {
       0x85, 0x08, 0x0e, 0x00, 0x00, 0x00, 0x01, 0x00,
@@ -38,7 +38,7 @@ int scsi_get_serial(int fd, unsigned char serial[20]) {
   return 0;
 }
 
-int nvme_get_serial(int fd, unsigned char serial[20]) {
+static int nvme_get_serial(int fd, unsigned char serial[20]) {
   unsigned char data[4096];
   struct nvme_admin_cmd cmd = {
       .opcode = 0x06, // nvme_admin_identify
@@ -56,4 +56,12 @@ int nvme_get_serial(int fd, unsigned char serial[20]) {
     serial[i] = data[i + 4];
   }
   return 0;
+}
+
+int get_serial(int fd, unsigned char serial[20]) {
+  int ret = nvme_get_serial(fd, serial);
+  if (ret == 0) {
+    return 0;
+  }
+  return scsi_get_serial(fd, serial);
 }
