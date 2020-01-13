@@ -3,13 +3,15 @@ package hash
 import (
 	"crypto/sha1"
 	"crypto/sha512"
-	"errors"
-	"fmt"
 	"hash"
 	"os"
+	"syscall"
 
 	"golang.org/x/crypto/pbkdf2"
 )
+
+// #include "block.h"
+import "C"
 
 // Option is a Hash configuration option.
 type Option func(s *settings)
@@ -55,7 +57,14 @@ type settings struct {
 // The original sedutil uses SHA1 hashing whereas some forks
 // already switched to SHA512 in order to enhance security.
 func Hash(passwd []byte, device string, opts ...Option) ([]byte, error) {
-	serial, err := getSerial(device)
+	// TODO: open once in the main package
+	f, err := os.OpenFile("/dev/"+device, os.O_RDONLY, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	serial, err := getSerial(f)
 	if err != nil {
 		return nil, err
 	}
@@ -70,20 +79,18 @@ func Hash(passwd []byte, device string, opts ...Option) ([]byte, error) {
 	return pbkdf2.Key(passwd, serial, s.iter, s.keyLen, s.h), nil
 }
 
-func getSerial(device string) ([]byte, error) {
-	p := fmt.Sprintf("/sys/class/block/%s/device/serial", device)
-	f, err := os.OpenFile(p, os.O_RDONLY, 0600)
-	if err != nil {
-		return nil, err
+func getSerial(f *os.File) ([]byte, error) {
+	var serial [20]C.uchar
+	if ret := C.nvme_get_serial(C.int(f.Fd()), &serial[0]); ret == 0 {
+		goto Success
 	}
-	defer f.Close()
-	b := make([]byte, 20)
-	n, err := f.Read(b)
-	if err != nil {
-		return nil, err
+	if ret := C.scsi_get_serial(C.int(f.Fd()), &serial[0]); ret != 0 {
+		return nil, syscall.Errno(ret)
 	}
-	if n != len(b) {
-		return nil, errors.New("invalid serial length")
+Success:
+	b := make([]byte, len(serial))
+	for i := range serial {
+		b[i] = byte(serial[i])
 	}
 	return b, nil
 }

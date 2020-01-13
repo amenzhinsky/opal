@@ -27,9 +27,21 @@ func main() {
 
 Commands:
   hash
-  mbr
   save
-  lkul
+  lock-unlock
+  take-ownership
+  activate-lsp
+  set-password
+  activate-user
+  retert-tpr
+  lr-setup
+  add-user-to-lr
+  mbr
+  erase-lr
+  secure-erase-lr
+  psid-revert-tpr
+  mbr-done
+  mbr-write-shadow
 
 Common options:
 `, filepath.Base(os.Args[0]))
