@@ -85,7 +85,6 @@ func Hash(passwd []byte, device string, opts ...Option) ([]byte, error) {
 			return nil, err
 		}
 	}
-
 	return pbkdf2.Key(passwd, s.salt, s.iter, s.keyLen, s.h), nil
 }
 

@@ -1,4 +1,5 @@
 #include <linux/sed-opal.h>
+#include <stdio.h>
 #include <sys/ioctl.h>
 
 // TCG_Storage_Architecture_Core_Spec_v2.01_r1.00,

@@ -8,22 +8,20 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/amenzhinsky/opal"
 	"github.com/amenzhinsky/opal/hash"
 	"github.com/amenzhinsky/opal/terminal"
 )
 
-var verboseFlag bool
+var debugFlag bool
 
-var (
-	errUsage      = errors.New("invalid usage")
-	errUnknownCmd = errors.New("unknown command")
-)
+var errUsage = errors.New("invalid usage")
 
 func main() {
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, `Usage: %s [common-option...] COMMAND [arg...]
+		fmt.Fprintf(os.Stderr, `Usage: opalctl [option...] COMMAND
 
 Commands:
   scan
@@ -34,7 +32,7 @@ Commands:
   activate-lsp
   set-password
   activate-user
-  retert-tpr
+  revert-tpr
   lr-setup
   add-user-to-lr
   mbr
@@ -44,55 +42,97 @@ Commands:
   mbr-done
   mbr-write-shadow
 
-Common options:
-`, filepath.Base(os.Args[0]))
+Options:
+`)
 		flag.PrintDefaults()
+		fmt.Fprintln(os.Stderr)
+		fmt.Fprintln(os.Stderr, "Run 'opalctl COMMAND -h' for more information on a command")
 	}
-	flag.BoolVar(&verboseFlag, "verbose", false, "enable verbose output")
+	flag.BoolVar(&debugFlag, "debug", false, "enable debug mode")
 	flag.Parse()
 	if flag.NArg() == 0 {
 		flag.Usage()
 		os.Exit(2)
 	}
-
-	fs := flag.NewFlagSet(flag.Arg(0), flag.ExitOnError)
-	if err := run(fs, flag.Args()[1:]); err != nil {
-		if err == errUnknownCmd {
-			flag.Usage()
-			os.Exit(2)
-		}
-		if err == errUsage {
-			fs.Usage()
-			os.Exit(2)
-		}
+	if err := run(flag.Arg(0), flag.Args()[1:]); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %s\n", err)
 		os.Exit(-1)
 	}
 }
 
-func run(fs *flag.FlagSet, argv []string) error {
-	switch fs.Name() {
-	case "scan":
-		return cmdScan(fs, argv)
-	case "hash":
-		return cmdHash(fs, argv)
-	case "save":
-		return cmdSave(fs, argv)
-	case "lkul":
-		return cmdLockUnlock(fs, argv)
-	case "mbr":
-		return cmdMbr(fs, argv)
-	default:
-		return errUnknownCmd
-	}
+var (
+	pwdFileFlag string
+	sha512Flag  bool
+	userFlag    opal.User
+	lrFlag      uint
+)
+
+func addPasswordFlags(cmd *command) {
+	cmd.fs.BoolVar(&sha512Flag, "sha512", false, "use PBKDF2-HMAC-SHA512")
+	cmd.fs.StringVar(&pwdFileFlag, "pwdfile", "", "`path` to file with password")
 }
 
-func cmdScan(fs *flag.FlagSet, argv []string) error {
-	fs.Usage = mkUsage(fs, "")
-	if err := fs.Parse(argv); err != nil {
-		return err
+func run(name string, argv []string) error {
+	var cmd *command
+	switch name {
+	case "scan":
+		cmd = mkcmd(name, "", cmdScan)
+	case "hash":
+		cmd = mkcmd(name, "DEVICE", cmdHash)
+		addPasswordFlags(cmd)
+	case "save":
+		cmd = mkSessionCmd(name, "DEVICE <RW|RO|LK>", cmdSave)
+	case "lkul":
+		cmd = mkSessionCmd(name, "DEVICE <RW|RO|LK>", cmdLockUnlock)
+	case "take-ownership":
+		cmd = mkKeyCmd(name, "DEVICE", cmdTakeOwnership)
+	case "activate-lsp":
+		cmd = mkKeyCmd(name, "DEVICE", cmdActivateLsp)
+	case "set-password":
+		cmd = mkSessionCmd(name, "DEVICE", cmdSetPassword)
+	case "activate-user":
+		cmd = mkSessionCmd(name, "DEVICE", cmdActivateUser)
+	case "revert-tpr":
+		cmd = mkKeyCmd(name, "DEVICE", cmdRevertTpr)
+	case "lr-setup":
+		cmd = mkSessionCmd(name, "DEVICE", cmdLrSetup)
+	case "add-user-to-lr":
+		cmd = mkSessionCmd(name, "DEVICE <RW|RO|LK>", cmdAddUserToLr)
+	case "mbr":
+		cmd = mkKeyCmd(name, "DEVICE <yes|no>", cmdMbr)
+	case "erase-lr":
+		cmd = mkSessionCmd(name, "DEVICE", cmdEraseLr)
+	case "secure-erase-lr":
+		cmd = mkSessionCmd(name, "DEVICE", cmdSecureEraseLr)
+	case "psid-revert-tpr":
+		cmd = mkKeyCmd(name, "DEVICE", cmdPsidRevertTpr)
+	case "mbr-done":
+		cmd = mkKeyCmd(name, "DEVICE <yes|no>", cmdMbrDone)
+	case "mbr-write-shadow":
+		cmd = mkKeyCmd(name, "DEVICE <yes|no>", cmdMbrWriteShadow)
+	default:
+		flag.Usage()
+		os.Exit(2)
 	}
 
+	if err := cmd.fs.Parse(argv); err != nil {
+		return err
+	}
+	if cmd.na != cmd.fs.NArg() {
+		cmd.fs.Usage()
+		os.Exit(2)
+	}
+	if err := cmd.fn(cmd.fs.Args()); err != nil {
+		if err == errUsage {
+			cmd.fs.Usage()
+			os.Exit(2)
+		}
+		return err
+	}
+	return nil
+}
+
+func cmdScan(argv []string) error {
 	root := "/sys/class/block"
 	return filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -112,160 +152,221 @@ func cmdScan(fs *flag.FlagSet, argv []string) error {
 	})
 }
 
-func cmdHash(fs *flag.FlagSet, argv []string) error {
-	var (
-		sha512Flag bool
-		iterFlag   int
-		lenFlag    int
-		saltFlag   string
-	)
-	fs.Usage = mkUsage(fs, "DEVICE")
-	fs.BoolVar(&sha512Flag, "sha512", false, "use PBKDF2-HMAC-SHA512")
-	fs.IntVar(&iterFlag, "iter", 0, "`number` of iterations")
-	fs.IntVar(&lenFlag, "len", 0, "key length in `bytes`")
-	fs.StringVar(&saltFlag, "salt", "", "hashing `salt`")
-	if err := fs.Parse(argv); err != nil {
-		return err
-	}
-	if fs.NArg() != 1 {
-		return errUsage
-	}
-
-	passwd, err := getPassword(opal.Admin1, fs.Arg(0), false, false)
+func cmdHash(argv []string) error {
+	passwd, err := getPassword(argv[0])
 	if err != nil {
 		return err
 	}
-	b, err := hash.Hash(passwd, fs.Arg(0),
-		hash.WithIterations(iterFlag),
-		hash.WithKeyLength(lenFlag),
-		hash.WithSHA512(sha512Flag),
-		hash.WithSalt([]byte(saltFlag)),
-	)
-	if err != nil {
-		return err
-	}
-	fmt.Println(hex.EncodeToString(b))
+	fmt.Println(hex.EncodeToString(passwd))
 	return nil
 }
 
-func cmdSave(fs *flag.FlagSet, argv []string) error {
-	fs.Usage = mkUsage(fs, "DEVICE")
-	if err := fs.Parse(argv); err != nil {
-		return err
-	}
-	if fs.NArg() != 1 {
-		return errUsage
-	}
-
-	passwd, err := getPassword(opal.Admin1, fs.Arg(0), false, false)
+func cmdSave(client *opal.Client, sess *opal.Session, argv []string) error {
+	state, err := parseLockingState(argv[0])
 	if err != nil {
 		return err
 	}
-	_ = passwd
+	return client.Save(sess, state)
+}
 
+func cmdLockUnlock(client *opal.Client, sess *opal.Session, argv []string) error {
+	state, err := parseLockingState(argv[0])
+	if err != nil {
+		return err
+	}
+	return client.LockUnlock(sess, state)
+}
+
+func cmdTakeOwnership(client *opal.Client, key *opal.Key, argv []string) error {
+	return client.TakeOwnership(key)
+}
+
+func cmdActivateLsp(client *opal.Client, key *opal.Key, argv []string) error {
+	return client.ActivateLsp(key)
+}
+
+func cmdSetPassword(client *opal.Client, sess *opal.Session, argv []string) error {
+	// TODO
+	panic("TODO")
 	return nil
 }
 
-func cmdLockUnlock(fs *flag.FlagSet, argv []string) error {
-	var (
-		userFlag = opal.Admin1
-		lrFlag   uint
-	)
-	fs.Usage = mkUsage(fs, "DEVICE <RW|RO|LK>")
-	fs.UintVar(&lrFlag, "lr", 0, "locking range number")
-	fs.Var((*userVar)(&userFlag), "user", "set `username` (default Admin1)")
-	if err := fs.Parse(argv); err != nil {
+func cmdActivateUser(client *opal.Client, sess *opal.Session, argv []string) error {
+	return client.ActivateUsr(sess)
+}
+
+func cmdRevertTpr(client *opal.Client, key *opal.Key, argv []string) error {
+	return client.RevertTpr(key)
+}
+
+func cmdLrSetup(client *opal.Client, sess *opal.Session, argv []string) error {
+	return client.LrSetup(sess)
+}
+
+func cmdAddUserToLr(client *opal.Client, sess *opal.Session, argv []string) error {
+	state, err := parseLockingState(argv[0])
+	if err != nil {
 		return err
 	}
-	if fs.NArg() != 2 {
-		return errUsage
-	}
+	return client.AddUserToLr(sess, state)
+}
 
-	var state opal.LockUnlockState
-	switch fs.Arg(1) {
+func cmdMbr(client *opal.Client, key *opal.Key, argv []string) error {
+	enable, err := parseYesNo(argv[0])
+	if err != nil {
+		return err
+	}
+	return client.EnableDisableMbr(key, enable)
+}
+
+func cmdEraseLr(client *opal.Client, sess *opal.Session, argv []string) error {
+	return client.EraseLr(sess)
+}
+
+func cmdSecureEraseLr(client *opal.Client, sess *opal.Session, argv []string) error {
+	return client.SecureEraseLr(sess)
+}
+
+func cmdPsidRevertTpr(client *opal.Client, key *opal.Key, argv []string) error {
+	// TODO: key here can be only PSID
+	panic("todo")
+	return client.PsidRevertTpr(key)
+}
+
+func cmdMbrDone(client *opal.Client, key *opal.Key, argv []string) error {
+	done, err := parseYesNo(argv[0])
+	if err != nil {
+		return err
+	}
+	return client.MbrDone(key, done)
+}
+
+func cmdMbrWriteShadow(client *opal.Client, key *opal.Key, argv []string) error {
+	// TODO
+	panic("TODO")
+	return client.MbrWriteShadow(key, nil)
+}
+
+func parseLockingState(s string) (opal.LockUnlockState, error) {
+	switch s {
 	case "RW":
-		state = opal.LockUnlockReadWrite
+		return opal.LockUnlockReadWrite, nil
 	case "RO":
-		state = opal.LockUnlockReadOnly
+		return opal.LockUnlockReadOnly, nil
 	case "LK":
-		state = opal.LockUnlockLock
+		return opal.LockUnlockLock, nil
 	default:
-		return fmt.Errorf("unknown locking range state %q", fs.Arg(1))
+		return 0, fmt.Errorf("unknown locking range state %q", s)
 	}
-
-	passwd, err := getPassword(userFlag, fs.Arg(0), false, false)
-	if err != nil {
-		return err
-	}
-
-	key, err := opal.NewKey(passwd, lrFlag)
-	if err != nil {
-		return err
-	}
-
-	c, err := opal.Open(fs.Arg(0))
-	if err != nil {
-		return err
-	}
-	defer c.Close()
-	return c.LockUnlock(opal.NewSession(key, userFlag), state)
 }
 
-func cmdMbr(fs *flag.FlagSet, argv []string) error {
-	fs.Usage = mkUsage(fs, "DEVICE on|off")
-	if err := fs.Parse(argv); err != nil {
-		return err
-	}
-	if fs.NArg() != 2 {
-		return errUsage
-	}
-
-	var enable bool
-	switch fs.Arg(1) {
-	case "on":
-		enable = true
-	case "off":
-		enable = false
+func parseYesNo(s string) (bool, error) {
+	switch s {
+	case "yes":
+		return true, nil
+	case "no":
+		return false, nil
 	default:
-		return errUsage
+		return false, fmt.Errorf("cannot parse %q as yes/no choice", s)
 	}
-
-	passwd, err := getPassword(opal.Admin1, fs.Arg(0), false, false)
-	if err != nil {
-		return err
-	}
-
-	_ = enable
-	_ = passwd // TODO
-	return nil
 }
 
-func mkUsage(fs *flag.FlagSet, usage string) func() {
-	return func() {
+func mkKeyCmd(
+	name, usage string,
+	fn func(client *opal.Client, key *opal.Key, argv []string) error,
+) *command {
+	cmd := mkcmd(name, usage, withKey(fn))
+	cmd.fs.UintVar(&lrFlag, "lr", 0, "locking range `number`")
+	addPasswordFlags(cmd)
+	return cmd
+}
+
+func mkSessionCmd(
+	name, usage string,
+	fn func(client *opal.Client, sess *opal.Session, argv []string) error,
+) *command {
+	cmd := mkcmd(name, usage, withSession(fn))
+	cmd.fs.Var((*userVar)(&userFlag), "user", "set `username` (default Admin1)")
+	cmd.fs.UintVar(&lrFlag, "lr", 0, "locking range `number`") // same as in mkKeyCmd
+	addPasswordFlags(cmd)
+	return cmd
+}
+func withKey(
+	fn func(client *opal.Client, key *opal.Key, argv []string) error,
+) func([]string) error {
+	return func(argv []string) error {
+		passwd, err := getPassword(argv[0])
+		if err != nil {
+			return err
+		}
+		key, err := opal.NewKey(passwd, lrFlag)
+		if err != nil {
+			return err
+		}
+		client, err := opal.Open(argv[0])
+		if err != nil {
+			return err
+		}
+		defer client.Close()
+		return fn(client, key, argv[1:])
+	}
+}
+
+func withSession(
+	fn func(client *opal.Client, sess *opal.Session, argv []string) error,
+) func([]string) error {
+	return withKey(func(client *opal.Client, key *opal.Key, argv []string) error {
+		return fn(client, opal.NewSession(key, userFlag), argv)
+	})
+}
+
+func mkcmd(name, usage string, fn func([]string) error) *command {
+	var na int
+	if usage != "" {
+		na = strings.Count(usage, " ") + 1
+	}
+
+	cmd := &command{
+		fs: flag.NewFlagSet(name, flag.ExitOnError),
+		fn: fn,
+		na: na,
+	}
+	cmd.fs.Usage = func() {
 		var hasFlags bool
-		fs.VisitAll(func(f *flag.Flag) {
+		cmd.fs.VisitAll(func(f *flag.Flag) {
 			hasFlags = true
 		})
-
-		fmt.Fprintf(os.Stderr, `Usage: %s [common-option...] %s [option...] %s`,
-			filepath.Base(os.Args[0]), fs.Name(), usage)
+		fmt.Fprintf(os.Stderr, `Usage: opalctl %s [option...] %s`,
+			name, usage)
 		fmt.Fprint(os.Stderr, "\n")
 		if hasFlags {
 			fmt.Fprint(os.Stderr, "\nOptions:\n")
-			fs.PrintDefaults()
+			cmd.fs.PrintDefaults()
 		}
-		fmt.Fprint(os.Stderr, "\nCommon options:\n")
-		flag.PrintDefaults()
 	}
+	return cmd
 }
 
-func getPassword(user opal.User, device string, isRaw, isHex bool) ([]byte, error) {
+type command struct {
+	fs *flag.FlagSet
+	fn func([]string) error
+	na int
+}
+
+func getPassword(device string) ([]byte, error) {
 	var b []byte
 	var err error
-	if terminal.Isatty() {
-		s := fmt.Sprintf("[opal] enter %s password for %s: ", user, device)
+
+	env := os.Getenv("OPAL_PASSWORD")
+	switch {
+	case pwdFileFlag != "":
+		b, err = ioutil.ReadFile(pwdFileFlag)
+	case env != "":
+		b = []byte(env)
+	case terminal.Isatty():
+		s := fmt.Sprintf("[opal] enter %s password for %s: ", userFlag, device)
 		b, err = terminal.Prompt(s)
-	} else {
+	default:
 		b, err = ioutil.ReadAll(os.Stdin)
 	}
 	if err != nil {
@@ -275,13 +376,17 @@ func getPassword(user opal.User, device string, isRaw, isHex bool) ([]byte, erro
 		return nil, errors.New("passwd is empty")
 	}
 
-	if isRaw {
-		if isHex {
-			return hex.DecodeString(string(b))
-		}
-		return b, nil
-	}
-	return hash.Hash(b, device)
+	//if rawFlag {
+	//	if isHex {
+	//		return hex.DecodeString(string(b))
+	//	}
+	//	return b, nil
+	//}
+	return hash.Hash(b, device,
+		hash.WithSHA512(sha512Flag),
+		//hash.WithSalt(saltFlag),
+		//has
+	)
 }
 
 type userVar opal.User

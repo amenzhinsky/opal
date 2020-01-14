@@ -19,14 +19,7 @@ zcat /proc/config.gz | grep CONFIG_BLK_SED_OPAL
 For example to enable drive unlocking after a suspend of a device previously set up with `opalctl` it's needed to get the hashed version of a password:
 
 ```bash
+opalctl scan
 opalctl hash nvme0n1 PASSWORD
 opalctl save -hex nvme0n1 HASH
 ``` 
-
-To get your device NAME run `lsblk -d -o NAME,SIZE`:
-
-```
-NAME      SIZE
-sda      1024G
-nvme0n1   512G
-```

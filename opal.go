@@ -5,12 +5,22 @@ package opal
 import (
 	"errors"
 	"os"
+	"syscall"
 )
 
-// #include "opal.h"
-//
-// const __u32 opal_key_max = OPAL_KEY_MAX;
-// const __u32 opal_max_lrs = OPAL_MAX_LRS;
+/*
+#include <errno.h>
+#include "opal.h"
+
+extern int errno;
+
+const __u32 opal_key_max = OPAL_KEY_MAX;
+const __u32 opal_max_lrs = OPAL_MAX_LRS;
+
+int get_errno() {
+	return errno;
+}
+*/
 import "C"
 
 func NewKey(passwd []byte, lr uint) (*Key, error) {
@@ -234,6 +244,9 @@ func newLockUnlock(sess *Session, state LockUnlockState) (*C.struct_opal_lock_un
 func checkErr(ret C.int) error {
 	if ret == 0 {
 		return nil
+	}
+	if ret == -1 {
+		return syscall.Errno(C.get_errno())
 	}
 	return Error{ret: ret}
 }
