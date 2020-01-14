@@ -3,9 +3,9 @@ package hash
 import (
 	"crypto/sha1"
 	"crypto/sha512"
+	"fmt"
 	"hash"
 	"os"
-	"syscall"
 
 	"golang.org/x/crypto/pbkdf2"
 )
@@ -90,8 +90,12 @@ func Hash(passwd []byte, device string, opts ...Option) ([]byte, error) {
 
 func getSerial(f *os.File) ([]byte, error) {
 	var serial [20]C.uchar
-	if ret := C.get_serial(C.int(f.Fd()), &serial[0]); ret != 0 {
-		return nil, syscall.Errno(ret)
+	ret, errno := C.get_serial(C.int(f.Fd()), &serial[0])
+	if ret != 0 {
+		if ret == -1 {
+			return nil, errno
+		}
+		return nil, fmt.Errorf("get_serial = %d code", int(ret))
 	}
 	b := make([]byte, len(serial))
 	for i := range serial {

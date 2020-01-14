@@ -24,23 +24,23 @@ func main() {
 		fmt.Fprintf(os.Stderr, `Usage: opalctl [option...] COMMAND
 
 Commands:
-  scan
-  hash
-  save
-  lock-unlock
-  take-ownership
-  activate-lsp
-  set-password
-  activate-user
-  revert-tpr
-  lr-setup
-  add-user-to-lr
-  mbr
-  erase-lr
-  secure-erase-lr
-  psid-revert-tpr
-  mbr-done
-  mbr-write-shadow
+  scan               detect all block devices and show OPAL statuses
+  hash               hash user password with sedutil compatible algorithm
+  save               register a lock-unlock command after S3 sleep
+  lock-unlock        lock or onlock a locking range
+  take-ownership     take ownership and change Admin1 password from MSID 
+  activate-lsp       change state of the Locking SP
+  set-password       change user password
+  activate-user      activate a non-admin user
+  revert-tpr         reset device to the factory state
+  lr-setup           set up a locking range
+  add-user-to-lr     add a user to a locking range
+  mbr                enable MBR shadowing on when the device is powered down
+  erase-lr           erase the named locking range
+  secure-erase-lr    erase (securely) the named locking range
+  psid-revert-tpr    revert TPR with PSID
+  mbr-done           swith the drive out of the shadowed state
+  mbr-write-shadow   write MBR shadow table
 
 Options:
 `)
@@ -82,7 +82,7 @@ func run(name string, argv []string) error {
 		addPasswordFlags(cmd)
 	case "save":
 		cmd = mkSessionCmd(name, "DEVICE <RW|RO|LK>", cmdSave)
-	case "lkul":
+	case "lock-unlock":
 		cmd = mkSessionCmd(name, "DEVICE <RW|RO|LK>", cmdLockUnlock)
 	case "take-ownership":
 		cmd = mkKeyCmd(name, "DEVICE", cmdTakeOwnership)

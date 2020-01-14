@@ -5,21 +5,13 @@ package opal
 import (
 	"errors"
 	"os"
-	"syscall"
 )
 
 /*
-#include <errno.h>
 #include "opal.h"
-
-extern int errno;
 
 const __u32 opal_key_max = OPAL_KEY_MAX;
 const __u32 opal_max_lrs = OPAL_MAX_LRS;
-
-int get_errno() {
-	return errno;
-}
 */
 import "C"
 
@@ -118,7 +110,8 @@ func (c *Client) Save(sess *Session, state LockUnlockState) error {
 	if err != nil {
 		return err
 	}
-	return checkErr(C.opal_save(c.fd(), lkul))
+	ret, errno := C.opal_save(c.fd(), lkul)
+	return checkRet(ret, errno)
 }
 
 func (c *Client) LockUnlock(sess *Session, state LockUnlockState) error {
@@ -126,45 +119,52 @@ func (c *Client) LockUnlock(sess *Session, state LockUnlockState) error {
 	if err != nil {
 		return err
 	}
-	return checkErr(C.opal_lock_unlock(c.fd(), lkul))
+	ret, errno := C.opal_lock_unlock(c.fd(), lkul)
+	return checkRet(ret, errno)
 }
 
 func (c *Client) TakeOwnership(key *Key) error {
-	return checkErr(C.opal_take_ownership(c.fd(), &key.k))
+	ret, errno := C.opal_take_ownership(c.fd(), &key.k)
+	return checkRet(ret, errno)
 }
 
 func (c *Client) ActivateLsp(key *Key) error {
-	return checkErr(C.opal_activate_lsp(c.fd(), &C.struct_opal_lr_act{
+	ret, errno := C.opal_activate_lsp(c.fd(), &C.struct_opal_lr_act{
 		key: key.k,
 		// TODO: sum: 0,
 		// TODO: num_lrs: 0,
 		// TODO: lr:
-	}))
+	})
+	return checkRet(ret, errno)
 }
 
 func (c *Client) SetPw(sess *Session) error {
-	return checkErr(C.opal_set_pw(c.fd(), &C.struct_opal_new_pw{
+	ret, errno := C.opal_set_pw(c.fd(), &C.struct_opal_new_pw{
 		session: sess.s,
 		// TODO: new_user_pw: C.struct_opal_session_info{},
-	}))
+	})
+	return checkRet(ret, errno)
 }
 
 func (c *Client) ActivateUsr(sess *Session) error {
-	return checkErr(C.opal_activate_usr(c.fd(), &sess.s))
+	ret, errno := C.opal_activate_usr(c.fd(), &sess.s)
+	return checkRet(ret, errno)
 }
 
 func (c *Client) RevertTpr(key *Key) error {
-	return checkErr(C.opal_revert_tpr(c.fd(), &key.k))
+	ret, errno := C.opal_revert_tpr(c.fd(), &key.k)
+	return checkRet(ret, errno)
 }
 
 func (c *Client) LrSetup(sess *Session) error {
-	return checkErr(C.opal_lr_setup(c.fd(), &C.struct_opal_user_lr_setup{
+	ret, errno := C.opal_lr_setup(c.fd(), &C.struct_opal_user_lr_setup{
 		// TODO: range_start:  0,
 		// TODO: range_length: 0,
 		// TODO: RLE:          0,
 		// TODO: WLE:          0,
 		session: sess.s,
-	}))
+	})
+	return checkRet(ret, errno)
 }
 
 func (c *Client) AddUserToLr(sess *Session, state LockUnlockState) error {
@@ -172,7 +172,8 @@ func (c *Client) AddUserToLr(sess *Session, state LockUnlockState) error {
 	if err != nil {
 		return err
 	}
-	return checkErr(C.opal_add_usr_to_lr(c.fd(), lkul))
+	ret, errno := C.opal_add_usr_to_lr(c.fd(), lkul)
+	return checkRet(ret, errno)
 }
 
 func (c *Client) EnableDisableMbr(key *Key, enable bool) error {
@@ -180,22 +181,26 @@ func (c *Client) EnableDisableMbr(key *Key, enable bool) error {
 	if enable {
 		enableDisable = C.OPAL_MBR_DISABLE
 	}
-	return checkErr(C.opal_enable_disable_mbr(c.fd(), &C.struct_opal_mbr_data{
+	ret, errno := C.opal_enable_disable_mbr(c.fd(), &C.struct_opal_mbr_data{
 		key:            key.k,
 		enable_disable: C.__u8(enableDisable),
-	}))
+	})
+	return checkRet(ret, errno)
 }
 
 func (c *Client) EraseLr(sess *Session) error {
-	return checkErr(C.opal_erase_lr(c.fd(), &sess.s))
+	ret, errno := C.opal_erase_lr(c.fd(), &sess.s)
+	return checkRet(ret, errno)
 }
 
 func (c *Client) SecureEraseLr(sess *Session) error {
-	return checkErr(C.opal_secure_erase_lr(c.fd(), &sess.s))
+	ret, errno := C.opal_secure_erase_lr(c.fd(), &sess.s)
+	return checkRet(ret, errno)
 }
 
 func (c *Client) PsidRevertTpr(key *Key) error {
-	return checkErr(C.opal_psid_revert_tpr(c.fd(), &key.k))
+	ret, errno := C.opal_psid_revert_tpr(c.fd(), &key.k)
+	return checkRet(ret, errno)
 }
 
 func (c *Client) MbrDone(key *Key, done bool) error {
@@ -203,19 +208,21 @@ func (c *Client) MbrDone(key *Key, done bool) error {
 	if done {
 		doneFlag = C.OPAL_MBR_DONE
 	}
-	return checkErr(C.opal_mbr_done(c.fd(), &C.struct_opal_mbr_done{
+	ret, errno := C.opal_mbr_done(c.fd(), &C.struct_opal_mbr_done{
 		key:       key.k,
 		done_flag: C.__u8(doneFlag),
-	}))
+	})
+	return checkRet(ret, errno)
 }
 
 func (c *Client) MbrWriteShadow(key *Key, data []byte) error {
-	return checkErr(C.opal_write_shadow_mbr(c.fd(), &C.struct_opal_shadow_mbr{
+	ret, errno := C.opal_write_shadow_mbr(c.fd(), &C.struct_opal_shadow_mbr{
 		key: key.k,
 		// TODO: data: 0,
 		// TODO: offset: 0,
 		// TODO: size: 0,
-	}))
+	})
+	return checkRet(ret, errno)
 }
 
 func (c *Client) Close() error {
@@ -241,12 +248,12 @@ func newLockUnlock(sess *Session, state LockUnlockState) (*C.struct_opal_lock_un
 	}, nil
 }
 
-func checkErr(ret C.int) error {
+func checkRet(ret C.int, errno error) error {
 	if ret == 0 {
 		return nil
 	}
 	if ret == -1 {
-		return syscall.Errno(C.get_errno())
+		return errno
 	}
 	return Error{ret: ret}
 }
