@@ -64,8 +64,7 @@ type settings struct {
 // The original sedutil uses SHA1 hashing whereas some forks
 // already switched to SHA512 in order to enhance security.
 func Hash(passwd []byte, device string, opts ...Option) ([]byte, error) {
-	// TODO: open once in the main package
-	f, err := os.OpenFile("/dev/"+device, os.O_RDONLY, 0)
+	f, err := os.OpenFile(device, os.O_RDONLY, 0)
 	if err != nil {
 		return nil, err
 	}

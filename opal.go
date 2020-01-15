@@ -4,7 +4,9 @@ package opal
 
 import (
 	"errors"
+	"io"
 	"os"
+	"syscall"
 )
 
 /*
@@ -81,12 +83,19 @@ const (
 	User9  User = C.OPAL_USER9
 )
 
-func NewSession(key *Key, user User) *Session {
+func NewSession(key *Key, who User, sum bool) (*Session, error) {
+	if sum && who != Admin1 {
+		return nil, errors.New("non-Admin1 user in the Single User Mode")
+	}
+	var csum C.__u32
+	if sum {
+		csum = 1
+	}
 	return &Session{s: C.struct_opal_session_info{
-		// TODO: sum:      0,
-		who:      C.__u32(user),
+		sum:      csum,
+		who:      C.__u32(who),
 		opal_key: key.k,
-	}}
+	}}, nil
 }
 
 type Session struct {
@@ -94,7 +103,7 @@ type Session struct {
 }
 
 func Open(device string) (*Client, error) {
-	f, err := os.OpenFile("/dev/"+device, os.O_RDONLY, 0)
+	f, err := os.OpenFile(device, os.O_RDONLY, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -128,46 +137,57 @@ func (c *Client) TakeOwnership(key *Key) error {
 	return checkRet(ret, errno)
 }
 
-func (c *Client) ActivateLsp(key *Key) error {
+func (c *Client) ActivateLSP(key *Key) error {
 	ret, errno := C.opal_activate_lsp(c.fd(), &C.struct_opal_lr_act{
 		key: key.k,
-		// TODO: sum: 0,
-		// TODO: num_lrs: 0,
-		// TODO: lr:
+		//  TODO: // applicable only when sum != 0
+		//	TODO: sum: 0,
+		//	TODO: num_lrs: 0,
+		//	TODO: lr: [opal_max_lrs]
 	})
 	return checkRet(ret, errno)
 }
 
-func (c *Client) SetPw(sess *Session) error {
-	ret, errno := C.opal_set_pw(c.fd(), &C.struct_opal_new_pw{
-		session: sess.s,
-		// TODO: new_user_pw: C.struct_opal_session_info{},
-	})
-	return checkRet(ret, errno)
+func (c *Client) SetPassword(sess, newUserPw *Session) error {
+	return errors.New("not implemented")
+	// TODO: ret, errno := C.opal_set_pw(c.fd(), &C.struct_opal_new_pw{
+	// TODO: 	session:     sess.s,
+	// TODO: 	new_user_pw: newUserPw.s,
+	// TODO: })
+	// TODO: return checkRet(ret, errno)
 }
 
-func (c *Client) ActivateUsr(sess *Session) error {
+func (c *Client) ActivateUser(sess *Session) error {
 	ret, errno := C.opal_activate_usr(c.fd(), &sess.s)
 	return checkRet(ret, errno)
 }
 
-func (c *Client) RevertTpr(key *Key) error {
+func (c *Client) RevertTPR(key *Key) error {
 	ret, errno := C.opal_revert_tpr(c.fd(), &key.k)
 	return checkRet(ret, errno)
 }
 
-func (c *Client) LrSetup(sess *Session) error {
+func (c *Client) LRSetup(sess *Session, rle, wle bool) error {
+	var crle, cwle C.__u32
+	if rle {
+		crle = 1
+	}
+	if wle {
+		cwle = 1
+	}
 	ret, errno := C.opal_lr_setup(c.fd(), &C.struct_opal_user_lr_setup{
+		session: sess.s,
+		RLE:     crle, // read lock enabled
+		WLE:     cwle, // write lock enabled
+
+		// GlobalLR (0) ignores this
 		// TODO: range_start:  0,
 		// TODO: range_length: 0,
-		// TODO: RLE:          0,
-		// TODO: WLE:          0,
-		session: sess.s,
 	})
 	return checkRet(ret, errno)
 }
 
-func (c *Client) AddUserToLr(sess *Session, state LockUnlockState) error {
+func (c *Client) AddUserToLR(sess *Session, state LockUnlockState) error {
 	lkul, err := newLockUnlock(sess, state)
 	if err != nil {
 		return err
@@ -176,7 +196,7 @@ func (c *Client) AddUserToLr(sess *Session, state LockUnlockState) error {
 	return checkRet(ret, errno)
 }
 
-func (c *Client) EnableDisableMbr(key *Key, enable bool) error {
+func (c *Client) EnableDisableMBR(key *Key, enable bool) error {
 	enableDisable := C.OPAL_MBR_DISABLE
 	if enable {
 		enableDisable = C.OPAL_MBR_DISABLE
@@ -188,22 +208,22 @@ func (c *Client) EnableDisableMbr(key *Key, enable bool) error {
 	return checkRet(ret, errno)
 }
 
-func (c *Client) EraseLr(sess *Session) error {
+func (c *Client) EraseLR(sess *Session) error {
 	ret, errno := C.opal_erase_lr(c.fd(), &sess.s)
 	return checkRet(ret, errno)
 }
 
-func (c *Client) SecureEraseLr(sess *Session) error {
+func (c *Client) SecureEraseLR(sess *Session) error {
 	ret, errno := C.opal_secure_erase_lr(c.fd(), &sess.s)
 	return checkRet(ret, errno)
 }
 
-func (c *Client) PsidRevertTpr(key *Key) error {
+func (c *Client) PSIDRevertTPR(key *Key) error {
 	ret, errno := C.opal_psid_revert_tpr(c.fd(), &key.k)
 	return checkRet(ret, errno)
 }
 
-func (c *Client) MbrDone(key *Key, done bool) error {
+func (c *Client) MBRDone(key *Key, done bool) error {
 	doneFlag := C.OPAL_MBR_NOT_DONE
 	if done {
 		doneFlag = C.OPAL_MBR_DONE
@@ -215,14 +235,15 @@ func (c *Client) MbrDone(key *Key, done bool) error {
 	return checkRet(ret, errno)
 }
 
-func (c *Client) MbrWriteShadow(key *Key, data []byte) error {
-	ret, errno := C.opal_write_shadow_mbr(c.fd(), &C.struct_opal_shadow_mbr{
-		key: key.k,
-		// TODO: data: 0,
-		// TODO: offset: 0,
-		// TODO: size: 0,
-	})
-	return checkRet(ret, errno)
+func (c *Client) MBRWriteShadow(key *Key, r io.Reader) error {
+	return errors.New("not implemented")
+	// TODO: ret, errno := C.opal_write_shadow_mbr(c.fd(), &C.struct_opal_shadow_mbr{
+	// TODO: 	key: key.k,
+	// TODO: 	data: 0,
+	// TODO: 	offset: 0,
+	// TODO: 	size: 0,
+	// TODO: })
+	// TODO: return checkRet(ret, errno)
 }
 
 func (c *Client) Close() error {
@@ -253,6 +274,9 @@ func checkRet(ret C.int, errno error) error {
 		return nil
 	}
 	if ret == -1 {
+		if errno.(syscall.Errno) == 524 {
+			return errors.New("device doesn't support OPAL")
+		}
 		return errno
 	}
 	return Error{ret: ret}
