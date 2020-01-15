@@ -33,7 +33,7 @@ Commands:
   set-password       change the password in the LockingSP
   activate-user      activate a non-admin user
   revert-tpr         reset device to the factory state
-  lr-setup           set up a locking range
+  setup-lr           set up a locking range
   add-user-to-lr     add a user to a locking range
   mbr                enable MBR shadowing on when the device is powered down
   erase-lr           erase the named locking range
@@ -82,8 +82,8 @@ func run(name string, argv []string) error {
 		cmd = mkKeyCmd(name, "DEVICE USER", cmdActivateUser)
 	case "revert-tpr":
 		cmd = mkKeyCmd(name, "DEVICE", cmdRevertTPR)
-	case "lr-setup":
-		cmd = mkSessionCmd(name, "DEVICE", cmdLRSetup)
+	case "setup-lr":
+		cmd = mkSessionCmd(name, "DEVICE", cmdSetupLR)
 		cmd.fs.BoolVar(&wleFlag, "wle", true, "write lock enabled")
 		cmd.fs.BoolVar(&rleFlag, "rle", true, "read lock enabled")
 	case "add-user-to-lr":
@@ -213,8 +213,8 @@ var (
 	wleFlag bool
 )
 
-func cmdLRSetup(client *opal.Client, sess *opal.Session, argv []string) error {
-	return client.LRSetup(sess, rleFlag, wleFlag)
+func cmdSetupLR(client *opal.Client, sess *opal.Session, argv []string) error {
+	return client.SetupLR(sess, rleFlag, wleFlag)
 }
 
 func cmdAddUserToLR(client *opal.Client, key *opal.Key, argv []string) error {

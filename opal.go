@@ -167,7 +167,7 @@ func (c *Client) RevertTPR(key *Key) error {
 	return checkRet(ret, errno)
 }
 
-func (c *Client) LRSetup(sess *Session, rle, wle bool) error {
+func (c *Client) SetupLR(sess *Session, rle, wle bool) error {
 	var crle, cwle C.__u32
 	if rle {
 		crle = 1
