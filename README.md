@@ -16,8 +16,6 @@ zcat /proc/config.gz | grep CONFIG_BLK_SED_OPAL
 
 By default `opalctl` uses password hashing just like `sedutil` does. Instead of sending a raw password to a device it's PBKDF2'd first.
 
-Passwords are obtained from `-pwdfile=PATH` option, `OPAL_PASSWORD` environment variable, prompted from `TTY` or read from `STDIN` (in this very order) and not accepted as an argument due to security issues.
-
 If you use a `sedutil` fork ([1](https://github.com/ChubbyAnt/sedutil), [2](https://github.com/ladar/sedutil)) that switched to SHA512 password hashing algorithm use `-sha512` option.
 
 To use raw passwords pass `-raw` option with `-hex` if needed.

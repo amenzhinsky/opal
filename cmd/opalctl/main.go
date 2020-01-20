@@ -1,11 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strings"
@@ -35,10 +35,10 @@ Commands:
   revert-tpr         reset device to the factory state
   setup-lr           set up a locking range
   add-user-to-lr     add a user to a locking range
-  mbr                enable MBR shadowing on when the device is powered down
   erase-lr           erase the named locking range
   secure-erase-lr    erase (securely) the named locking range
   psid-revert-tpr    revert TPR with PSID
+  mbr-enable         enable MBR shadowing on when the device is powered down
   mbr-done           swith the drive out of the shadowed state
   mbr-write-shadow   write MBR shadow table
 
@@ -54,72 +54,68 @@ Options:
 		flag.Usage()
 		os.Exit(2)
 	}
-	if err := run(flag.Arg(0), flag.Args()[1:]); err != nil {
+
+	cmd := lookup(flag.Arg(0))
+	if cmd == nil {
+		flag.Usage()
+		os.Exit(2)
+	}
+	if err := cmd(flag.Args()[1:]); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %s\n", err)
 		os.Exit(-1)
 	}
 }
 
-func run(name string, argv []string) error {
-	var cmd *command
+func lookup(name string) func(argv []string) error {
 	switch name {
 	case "scan":
-		cmd = mkcmd(name, "", cmdScan)
+		return mkCmd(name, "", cmdScan)
 	case "hash":
-		cmd = mkcmd(name, "DEVICE", cmdHash)
-		addPasswordFlags(cmd)
+		return mkCmd(name, "<dev>", cmdHash, func(fs *flag.FlagSet) {
+			fs.BoolVar(&sha512Flag, "sha512", false, "use PBKDF2-HMAC-SHA512")
+		})
 	case "save":
-		cmd = mkSessionCmd(name, "DEVICE <RW|RO|LK>", cmdSave)
+		return mkUsrCmd(name, "<dev> <rw|ro|lk>", cmdSave, addSUMFlag, addLRFlag)
 	case "lock-unlock":
-		cmd = mkSessionCmd(name, "DEVICE <RW|RO|LK>", cmdLockUnlock)
+		return mkUsrCmd(name, "<dev> <rw|ro|lk>", cmdLockUnlock, addSUMFlag, addLRFlag)
 	case "take-ownership":
-		cmd = mkKeyCmd(name, "DEVICE", cmdTakeOwnership)
+		return mkAdmCmd(name, "<dev>", cmdTakeOwnership)
 	case "activate-lsp":
-		cmd = mkKeyCmd(name, "DEVICE", cmdActivateLSP)
+		return mkAdmCmd(name, "<dev>", cmdActivateLSP)
+		// TODO: addSUMFlag
+		// TODO: addLRFlag
 	case "set-password":
-		cmd = mkSessionCmd(name, "DEVICE", cmdSetPassword)
+		return mkUsrCmd(name, "<dev>", cmdSetPassword, addSUMFlag, func(fs *flag.FlagSet) {
+			fs.Var((*userVar)(&newUserFlag), "new-user", "(default same user)")
+		})
 	case "activate-user":
-		cmd = mkKeyCmd(name, "DEVICE USER", cmdActivateUser)
+		return mkAdmCmd(name, "<dev> <usr>", cmdActivateUser)
 	case "revert-tpr":
-		cmd = mkKeyCmd(name, "DEVICE", cmdRevertTPR)
+		return mkAdmCmd(name, "<dev>", cmdRevertTPR)
 	case "setup-lr":
-		cmd = mkSessionCmd(name, "DEVICE", cmdSetupLR)
-		cmd.fs.BoolVar(&wleFlag, "wle", true, "write lock enabled")
-		cmd.fs.BoolVar(&rleFlag, "rle", true, "read lock enabled")
+		return mkUsrCmd(name, "<dev>", cmdSetupLR, addSUMFlag, addLRFlag,
+			func(fs *flag.FlagSet) {
+				fs.BoolVar(&wleFlag, "wle", true, "write lock enabled")
+				fs.BoolVar(&rleFlag, "rle", true, "read lock enabled")
+			},
+		)
 	case "add-user-to-lr":
-		cmd = mkKeyCmd(name, "DEVICE USER <RW|RO|LK>", cmdAddUserToLR)
-	case "mbr":
-		cmd = mkKeyCmd(name, "DEVICE <yes|no>", cmdMBR)
+		return mkAdmCmd(name, "<dev> <usr> <rw|ro|lk>", cmdAddUserToLR, addLRFlag)
 	case "erase-lr":
-		cmd = mkSessionCmd(name, "DEVICE", cmdEraseLR)
+		return mkUsrCmd(name, "<dev>", cmdEraseLR, addSUMFlag, addLRFlag)
 	case "secure-erase-lr":
-		cmd = mkSessionCmd(name, "DEVICE", cmdSecureEraseLR)
+		return mkUsrCmd(name, "<dev>", cmdSecureEraseLR, addSUMFlag, addLRFlag)
 	case "psid-revert-tpr":
-		cmd = mkKeyCmd(name, "DEVICE", cmdPSIDRevertTPR)
+		return mkCliCmd(name, "<dev> <psid>", cmdPSIDRevertTPR)
+	case "mbr-enable":
+		return mkAdmCmd(name, "<dev> <yes|no>", cmdMBR)
 	case "mbr-done":
-		cmd = mkKeyCmd(name, "DEVICE <yes|no>", cmdMBRDone)
+		return mkAdmCmd(name, "<dev> <yes|no>", cmdMBRDone)
 	case "mbr-write-shadow":
-		cmd = mkKeyCmd(name, "DEVICE <yes|no>", cmdMBRWriteShadow)
+		return mkAdmCmd(name, "<dev> <pba>", cmdMBRWriteShadow)
 	default:
-		flag.Usage()
-		os.Exit(2)
+		return nil
 	}
-
-	if err := cmd.fs.Parse(argv); err != nil {
-		return err
-	}
-	if cmd.na != cmd.fs.NArg() {
-		cmd.fs.Usage()
-		os.Exit(2)
-	}
-	if err := cmd.fn(cmd.fs.Args()); err != nil {
-		if err == errUsage {
-			cmd.fs.Usage()
-			os.Exit(2)
-		}
-		return err
-	}
-	return nil
 }
 
 func cmdScan(argv []string) error {
@@ -142,12 +138,21 @@ func cmdScan(argv []string) error {
 	})
 }
 
+var sha512Flag bool
+
 func cmdHash(argv []string) error {
+	// TODO: no need to prompt user name
 	passwd, err := getPassword(argv[0])
 	if err != nil {
 		return err
 	}
-	fmt.Println(hex.EncodeToString(passwd))
+	b, err := hash.Hash(passwd, argv[0],
+		hash.WithSHA512(sha512Flag),
+	)
+	if err != nil {
+		return err
+	}
+	fmt.Println(hex.EncodeToString(b))
 	return nil
 }
 
@@ -167,25 +172,38 @@ func cmdLockUnlock(client *opal.Client, sess *opal.Session, argv []string) error
 	return client.LockUnlock(sess, state)
 }
 
-func cmdTakeOwnership(client *opal.Client, key *opal.Key, argv []string) error {
+func cmdTakeOwnership(client *opal.Client, key *opal.Key, _ []string) error {
 	return client.TakeOwnership(key)
 }
 
-func cmdActivateLSP(client *opal.Client, key *opal.Key, argv []string) error {
+func cmdActivateLSP(client *opal.Client, key *opal.Key, _ []string) error {
 	return client.ActivateLSP(key)
 }
 
 var (
-	newUser     opal.User
-	newPassword []byte
+	newUserFlag opal.User
 )
 
 func cmdSetPassword(client *opal.Client, sess *opal.Session, argv []string) error {
-	key, err := opal.NewKey(newPassword, 0)
+	if !terminal.Isatty() {
+		return errors.New("not a tty") // TODO: env var or file
+	}
+	p1, err := terminal.Prompt(fmt.Sprintf("[opal] enter new %s password: ", newUserFlag))
 	if err != nil {
 		return err
 	}
-	newUsr, err := opal.NewSession(key, newUser, false)
+	p2, err := terminal.Prompt(fmt.Sprintf("[opal] retype new %s password: ", newUserFlag))
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(p1, p2) {
+		return errors.New("passwords don't match")
+	}
+	key, err := opal.NewKey(p1, 0)
+	if err != nil {
+		return err
+	}
+	newUsr, err := opal.NewSession(key, newUserFlag, false)
 	if err != nil {
 		return err
 	}
@@ -249,7 +267,15 @@ func cmdSecureEraseLR(client *opal.Client, sess *opal.Session, argv []string) er
 	return client.SecureEraseLR(sess)
 }
 
-func cmdPSIDRevertTPR(client *opal.Client, key *opal.Key, argv []string) error {
+func cmdPSIDRevertTPR(client *opal.Client, argv []string) error {
+	psid, err := hex.DecodeString(argv[0])
+	if err != nil {
+		return fmt.Errorf("cannot parse PSID: %s", err)
+	}
+	key, err := opal.NewKey(psid, 0)
+	if err != nil {
+		return err
+	}
 	return client.PSIDRevertTPR(key)
 }
 
@@ -262,16 +288,21 @@ func cmdMBRDone(client *opal.Client, key *opal.Key, argv []string) error {
 }
 
 func cmdMBRWriteShadow(client *opal.Client, key *opal.Key, argv []string) error {
-	return client.MBRWriteShadow(key, os.Stdin)
+	f, err := os.OpenFile(argv[0], os.O_RDONLY, 0)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return client.MBRWriteShadow(key, f)
 }
 
 func parseLockingState(s string) (opal.LockUnlockState, error) {
 	switch s {
-	case "RW":
+	case "rw":
 		return opal.LockUnlockReadWrite, nil
-	case "RO":
+	case "ro":
 		return opal.LockUnlockReadOnly, nil
-	case "LK":
+	case "lk":
 		return opal.LockUnlockLock, nil
 	default:
 		return 0, fmt.Errorf("unknown locking range state %q", s)
@@ -316,20 +347,45 @@ func parseYesNo(s string) (bool, error) {
 	}
 }
 
-var (
-	pwdFileFlag string
-	sha512Flag  bool
-)
+var hexFlag bool
 
-func addPasswordFlags(cmd *command) {
-	cmd.fs.BoolVar(&sha512Flag, "sha512", false, "use PBKDF2-HMAC-SHA512")
-	cmd.fs.StringVar(&pwdFileFlag, "pwdfile", "", "`path` to file with password")
+func addPasswordFlags(fs *flag.FlagSet) {
+	fs.BoolVar(&hexFlag, "hex", false, "password is in hex form")
 }
 
-func withKey(
+var lrFlag uint
+
+func addLRFlag(fs *flag.FlagSet) {
+	fs.UintVar(&lrFlag, "lr", 0, "locking range `number` (default GlobalLR)")
+}
+
+var sumFlag bool
+
+func addSUMFlag(fs *flag.FlagSet) {
+	fs.BoolVar(&sumFlag, "sum", false, "enable the Single User Mode")
+}
+
+func mkCliCmd(
+	name, usage string,
+	fn func(client *opal.Client, argv []string) error,
+	flags ...func(fs *flag.FlagSet),
+) func(argv []string) error {
+	return mkCmd(name, usage, func(argv []string) error {
+		client, err := opal.Open(argv[0])
+		if err != nil {
+			return err
+		}
+		defer client.Close()
+		return fn(client, argv[1:])
+	}, flags...)
+}
+
+func mkAdmCmd(
+	name, usage string,
 	fn func(client *opal.Client, key *opal.Key, argv []string) error,
-) func([]string) error {
-	return func(argv []string) error {
+	flags ...func(fs *flag.FlagSet),
+) func(argv []string) error {
+	return mkCliCmd(name, usage, func(client *opal.Client, argv []string) error {
 		passwd, err := getPassword(argv[0])
 		if err != nil {
 			return err
@@ -338,69 +394,43 @@ func withKey(
 		if err != nil {
 			return err
 		}
-		client, err := opal.Open(argv[0])
-		if err != nil {
-			return err
-		}
-		defer client.Close()
-		return fn(client, key, argv[1:])
-	}
+		return fn(client, key, argv)
+	}, append(flags, addPasswordFlags)...)
 }
 
-func withSession(
+var userFlag opal.User
+
+func mkUsrCmd(
+	name, usage string,
 	fn func(client *opal.Client, sess *opal.Session, argv []string) error,
-) func([]string) error {
-	return withKey(func(client *opal.Client, key *opal.Key, argv []string) error {
+	flags ...func(fs *flag.FlagSet),
+) func(argv []string) error {
+	return mkAdmCmd(name, usage, func(client *opal.Client, key *opal.Key, argv []string) error {
 		sess, err := opal.NewSession(key, userFlag, sumFlag)
 		if err != nil {
 			return err
 		}
 		return fn(client, sess, argv)
-	})
+	}, append(flags,
+		func(fs *flag.FlagSet) {
+			fs.Var((*userVar)(&userFlag), "user", "set `username` (default Admin1)")
+		},
+	)...)
 }
 
-func mkKeyCmd(
+func mkCmd(
 	name, usage string,
-	fn func(client *opal.Client, key *opal.Key, argv []string) error,
-) *command {
-	cmd := mkcmd(name, usage, withKey(fn))
-	cmd.fs.UintVar(&lrFlag, "lr", 0, "locking range `number` (default GlobalLR)")
-	addPasswordFlags(cmd)
-	return cmd
-}
-
-var (
-	userFlag opal.User
-	lrFlag   uint
-	sumFlag  bool
-)
-
-func mkSessionCmd(
-	name, usage string,
-	fn func(client *opal.Client, sess *opal.Session, argv []string) error,
-) *command {
-	cmd := mkcmd(name, usage, withSession(fn))
-	cmd.fs.Var((*userVar)(&userFlag), "user", "set `username` (default Admin1)")
-	cmd.fs.UintVar(&lrFlag, "lr", 0, "locking range `number` (default GlobalLR)")
-	cmd.fs.BoolVar(&sumFlag, "sum", false, "enable the Single User Mode")
-	addPasswordFlags(cmd)
-	return cmd
-}
-
-func mkcmd(name, usage string, fn func([]string) error) *command {
+	fn func([]string) error,
+	flags ...func(fs *flag.FlagSet),
+) func(argv []string) error {
 	var na int
 	if usage != "" {
 		na = strings.Count(usage, " ") + 1
 	}
-
-	cmd := &command{
-		fs: flag.NewFlagSet(name, flag.ExitOnError),
-		fn: fn,
-		na: na,
-	}
-	cmd.fs.Usage = func() {
+	fs := flag.NewFlagSet(name, flag.ExitOnError)
+	fs.Usage = func() {
 		var hasFlags bool
-		cmd.fs.VisitAll(func(f *flag.Flag) {
+		fs.VisitAll(func(f *flag.Flag) {
 			hasFlags = true
 		})
 		fmt.Fprintf(os.Stderr, `Usage: opalctl %s [option...] %s`,
@@ -408,16 +438,29 @@ func mkcmd(name, usage string, fn func([]string) error) *command {
 		fmt.Fprint(os.Stderr, "\n")
 		if hasFlags {
 			fmt.Fprint(os.Stderr, "\nOptions:\n")
-			cmd.fs.PrintDefaults()
+			fs.PrintDefaults()
 		}
 	}
-	return cmd
-}
-
-type command struct {
-	fs *flag.FlagSet
-	fn func([]string) error
-	na int
+	for i := range flags {
+		flags[i](fs)
+	}
+	return func(argv []string) error {
+		if err := fs.Parse(argv); err != nil {
+			return err
+		}
+		if na != fs.NArg() {
+			fs.Usage()
+			os.Exit(2)
+		}
+		if err := fn(fs.Args()); err != nil {
+			if err == errUsage {
+				fs.Usage()
+				os.Exit(2)
+			}
+			return err
+		}
+		return nil
+	}
 }
 
 func getPassword(device string) ([]byte, error) {
@@ -426,15 +469,13 @@ func getPassword(device string) ([]byte, error) {
 
 	env := os.Getenv("OPAL_PASSWORD")
 	switch {
-	case pwdFileFlag != "":
-		b, err = ioutil.ReadFile(pwdFileFlag)
 	case env != "":
 		b = []byte(env)
 	case terminal.Isatty():
 		s := fmt.Sprintf("[opal] enter %s password for %s: ", userFlag, device)
 		b, err = terminal.Prompt(s)
 	default:
-		b, err = ioutil.ReadAll(os.Stdin)
+		err = errors.New("cannot read password from OPAL_PASSWORD environment variable or TTY")
 	}
 	if err != nil {
 		return nil, err
@@ -443,16 +484,10 @@ func getPassword(device string) ([]byte, error) {
 		return nil, errors.New("password is empty")
 	}
 
-	// TODO: if rawFlag {
-	// TODO: 	if isHex {
-	// TODO: 		return hex.DecodeString(string(b))
-	// TODO: 	}
-	// TODO: 	return b, nil
-	// TODO: }
-	return hash.Hash(b, device,
-		hash.WithSHA512(sha512Flag),
-		// TODO: hash.WithSalt(saltFlag),
-	)
+	if hexFlag {
+		return hex.DecodeString(string(b))
+	}
+	return b, nil
 }
 
 type userVar opal.User
