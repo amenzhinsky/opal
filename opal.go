@@ -114,6 +114,10 @@ type Client struct {
 	f *os.File
 }
 
+func (c *Client) Device() string {
+	return c.f.Name()
+}
+
 func (c *Client) Save(sess *Session, state LockUnlockState) error {
 	lkul, err := newLockUnlock(sess, state)
 	if err != nil {

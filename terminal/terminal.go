@@ -2,6 +2,7 @@ package terminal
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"os"
 	"syscall"
@@ -10,15 +11,12 @@ import (
 
 const echo = 0000010
 
-func Isatty() bool {
-	_, err := get()
-	return err == nil
-}
+var ErrNotATTY = errors.New("not a tty")
 
 func Prompt(s string) ([]byte, error) {
 	term, err := get()
 	if err != nil {
-		return nil, err
+		return nil, ErrNotATTY
 	}
 	lflag := term.Lflag
 	term.Lflag ^= echo
@@ -34,6 +32,9 @@ func Prompt(s string) ([]byte, error) {
 	term.Lflag = lflag
 	if err = set(term); err != nil {
 		return nil, err
+	}
+	if len(line) == 0 {
+		return nil, errors.New("got an empty string")
 	}
 	return line, nil
 }
